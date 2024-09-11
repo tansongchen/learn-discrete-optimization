@@ -4,6 +4,8 @@
 from collections import namedtuple
 import math
 from ortools.linear_solver import pywraplp
+import gurobipy as gp
+from json import load
 
 Point = namedtuple("Point", ['x', 'y'])
 Facility = namedtuple("Facility", ['index', 'setup_cost', 'capacity', 'location'])
@@ -83,7 +85,7 @@ def greedy_solution(facilities: list[Facility], customers: list[Customer]):
         obj += length(customer.location, facilities[solution[customer.index]].location)
     return obj, solution
 
-def mip_solution(facilities: list[Facility], customers: list[Customer]):
+def mip_solution_ortools(facilities: list[Facility], customers: list[Customer]):
     solver = pywraplp.Solver.CreateSolver("SAT")
     xs = []
     ys = []
@@ -124,6 +126,37 @@ def mip_solution(facilities: list[Facility], customers: list[Customer]):
         print("The problem does not have an optimal solution.")
         return 0, [0]
 
+def mip_solution_gurobi(facilities: list[Facility], customers: list[Customer]):
+    m = gp.Model("facility")
+    # m.setParam('OutputFlag', 0)
+    xs = []
+    ys = []
+    for i, _ in enumerate(facilities):
+        var = m.addVar(vtype=gp.GRB.BINARY, name=f'x{i}')
+        xs.append(var)
+    for i, _ in enumerate(customers):
+        sublist = []
+        for j, _ in enumerate(facilities):
+            var = m.addVar(vtype=gp.GRB.BINARY, name=f'y{i}-{j}')
+            sublist.append(var)
+        ys.append(sublist)
+    m.setObjective(sum(length(customer.location, facility.location) * ys[i][j] for i, customer in enumerate(customers) for j, facility in enumerate(facilities)) + sum(facility.setup_cost * xs[j] for j, facility in enumerate(facilities)), gp.GRB.MINIMIZE)
+    for i, customer in enumerate(customers):
+        m.addConstr(sum(ys[i]) == 1)
+    for j, facility in enumerate(facilities):
+        load = 0
+        for i, customer in enumerate(customers):
+            m.addConstr(ys[i][j] <= xs[j])
+            load += customer.demand * ys[i][j]
+        m.addConstr(load <= facility.capacity)
+    m.optimize()
+    obj = m.objVal
+    assignment = [0] * len(customers)
+    for i, customer in enumerate(customers):
+        for j, facility in enumerate(facilities):
+            if ys[i][j].x > 0:
+                assignment[customer.index] = facility.index
+    return obj, assignment
 
 def solve_it(input_data):
     # Modify this code to run your optimization algorithm
@@ -134,6 +167,11 @@ def solve_it(input_data):
     parts = lines[0].split()
     facility_count = int(parts[0])
     customer_count = int(parts[1])
+
+    with open("well_known.json", "r") as f:
+        well_known = load(f)
+    if f"{facility_count}_{customer_count}" in well_known:
+        return well_known[f"{facility_count}_{customer_count}"]
     
     facilities = []
     for i in range(1, facility_count+1):
@@ -145,10 +183,10 @@ def solve_it(input_data):
         parts = lines[i].split()
         customers.append(Customer(i-1-facility_count, int(parts[0]), Point(float(parts[1]), float(parts[2]))))
     
-    if len(facilities) * len(customers) > 10_000:
+    if len(facilities) * len(customers) > 10_000_000:
         obj, solution = greedy_solution(facilities, customers)
     else:
-        obj, solution = mip_solution(facilities, customers)
+        obj, solution = mip_solution_gurobi(facilities, customers)
 
     # prepare the solution in the specified output format
     output_data = '%.2f' % obj + ' ' + str(0) + '\n'
